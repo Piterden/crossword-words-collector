@@ -1,0 +1,14 @@
+{
+  "name": "crossword-words-collector",
+  "version": "0.0.1",
+  "description": "Parser for crossword words and clues",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Denis Efremov <efremov.a.denis@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "node-fetch": "^2.6.0"
+  }
+}
