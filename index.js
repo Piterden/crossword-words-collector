@@ -2,296 +2,120 @@ const fs = require('fs')
 const path = require('path')
 const fetch = require('node-fetch')
 
-class SimpleFileStorageKey {
-  constructor(path) {
-    this.path = path
-    this.jsonSpace = '  '
-  }
+const getUrls = async () => {
+  const url = `https://www.freecrosswordsolver.com/sitemap-answers.xml`
+  const response = await fetch(url)
 
-  get(def) {
-    try {
-      return JSON.parse(fs.readFileSync(this.path, 'utf8'))
-    } catch (e) {
-      return def
-    }
+  if (!response) {
+    return []
   }
+  const text = await response.text()
 
-  set(value) {
-    fs.writeFileSync(
-      this.path,
-      JSON.stringify(value, '', this.jsonSpace),
-      'utf8'
-    )
-  }
-
-  update(callback, def) {
-    this.set(callback(this.get(def)))
-  }
+  return text.match(/https:\/\/www\.freecrosswordsolver\.com\/sitemap-answers-\d+\.xml/g)
+    .map((url) => fetch(url))
 }
 
-class SimpleFileStorage {
-  constructor(section, options) {
-    this.options = {
-      dir: './',
-      ...options,
+const getWords = async (urls) => {
+  const words = []
+
+  for await (const response of urls) {
+    console.time('i')
+    // const response = await fetch(url)
+
+    if (!response) {
+      continue
     }
-    this.pathStart = path.join(__dirname, this.options.dir, `_${section}_`)
+    const text = await response.text()
+    const match = text.match(/(?<=<loc>https:\/\/www\.freecrosswordsolver\.com\/answer\/)\w+(?=<\/loc>)/g)
+
+    if (match) {
+      words.push(...match)
+    }
+    console.timeEnd('i')
   }
 
-  key(key) {
-    return new SimpleFileStorageKey(`${this.pathStart}${key}.json`)
-  }
+  return words
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+(async () => {
+  const urls = await getUrls()
 
-class WaitFor {
-  constructor() {
-    this.resolve
-    this.promise
-    this._reset()
-  }
+  console.log(urls.length)
 
-  _reset() {
-    this.promise = new Promise((resolve) => {
-      this.resolve = resolve
-    })
-  }
+  const words = await getWords(urls)
 
-  set() {
-    this.resolve()
-  }
+  console.log(words.length)
 
-  async wait() {
-    await this.promise
-    this._reset()
-  }
-}
+  const unique = [...new Set(words)]
+    .filter(({ length }) => length > 2)
+    .sort((a, b) => a.length - b.length || a.localeCompare(b))
 
-class QueueItem {
-  constructor(name, args) {
-    this.name = name
-    this.args = args
-    this.errors = []
-    this.process = false
-  }
+  console.log(unique.length)
 
-  static fromRaw(raw) {
-    return new this(raw.name, raw.args)
-  }
-}
+  fs.writeFileSync(path.resolve('words.txt'), unique.join('\n'))
+})()
 
-class QueueLoad {
-  constructor(options) {
-    this.options = {
-      sfsk: new SimpleFileStorage('QueueLoad').key('Queue'),
-      maxThreads: 1,
-      ...options,
-    }
+//   for (let i = 0; i <= 309; i++) {
+//     const answers = []
+//   }
+// queueLoad.reg('answerLoad', async (queueLoad, url) => {
+//   console.log('answerLoad: %s', url)
+//   const words =
+//     (await (await fetch(url)).text()).match(/(?<=answer\/)\w+(?=<)/g) || []
+//   if (DEV_FAST_TEST) words.splice(100)
 
-    this.names = {}
-    this.queue = []
-    this.errors = []
-    this.numThreads = 0
-    this.work = false
-    this.maxThreads = this.options.maxThreads
-    this.sfsk = this.options.sfsk
-    this.next = 0
-    this.waitFor = new WaitFor()
-    this.loadQueue()
-  }
+//   for (const word of words) {
+//     all.push(word)
+//     // queueLoad.push('collectClues', word)
+//   }
+// })
 
-  _queueDelAndMoveToBack(queueItem, moveBack = false) {
-    const i = this.queue.findIndex((v) => v === queueItem)
-    this.queue.splice(i, 1)
-    if (moveBack) this.queue.push(queueItem)
-  }
+// queueLoad.reg('collectClues', async (queueLoad, word) => {
+//   const clues = []
+//   const url = `https://www.freecrosswordsolver.com/answer/${word}`
 
-  _nextPush() {
-    this.next++
-  }
+//   console.log('collectClues: %s', url)
+//   const text = await (await fetch(url)).text()
+//   const re = new RegExp(
+//     `(?<=<a class="page-link" href="https:\/\/www\\.freecrosswordsolver\\.com\/answer\/${word}\\?page=)\\d+(?=">)`,
+//     'g'
+//   )
+//   const pages = text.match(re)
 
-  _nextPop() {
-    if (this.next) {
-      this.next--
-      return true
-    }
-  }
+//   if (pages) {
+//     for (const page of pages) queueLoad.push('collectCluesOther', word, page)
+//   }
+// })
 
-  isContinue() {
-    return this.sfsk.get(undefined) !== undefined
-  }
+// queueLoad.reg('collectCluesOther', async (queueLoad, word, page) => {
+//   const url = `https://www.freecrosswordsolver.com/answer/${word}?page=${page}`
 
-  reg(key, callback) {
-    this.names[key] = callback
-  }
+//   console.log('collectCluesOther: %s', url)
+//   const text = await (await fetch(url)).text()
+//   const clues = text.match(/(?<=crossword-clue">)[\w\s]+(?=<)/g) || []
 
-  push(name, ...args) {
-    this.queue.push(new QueueItem(name, args))
-  }
+//   new SimpleFileStorage('main').key('words').update((words) => {
+//     let wordObj = words.find((v) => v.word === word)
 
-  async doQueueItem(queueItem) {
-    const fun = this.names[queueItem.name]
-    if (!fun) this.pushError(new Error(`Name '${queueItem.name}' not found`))
+//     if (!wordObj) {
+//       wordObj = { word, clues: [] }
+//       words.push(wordObj)
+//     }
 
-    try {
-      await fun(this, ...queueItem.args)
-      return true
-    } catch (e) {
-      this.pushError(e)
-      queueItem.errors.push(e.message)
-    }
+//     wordObj.clues.push(...clues)
+//     let set = new Set()
 
-    return false
-  }
+//     wordObj.clues = wordObj.clues.filter((s) =>
+//       set.has(s) ? false : (set.add(s), true)
+//     )
 
-  async start() {
-    this.work = true
+//     return words
+//   }, [])
+// })
 
-    while (this.work) {
-      if (!(await this.doQueueItems(0, this.waitFor))) {
-        break
-      }
+// if (!queueLoad.isContinue()) {
+//   console.log('Init')
+//   queueLoad.push('init')
+// }
 
-      await this.waitFor.wait()
-    }
-
-    while (this.work) {
-      if (!(await this.doQueueItems(5, this.waitFor))) {
-        break
-      }
-
-      await this.waitFor.wait()
-    }
-  }
-
-  async stop() {
-    this.work = false
-  }
-
-  async doQueueItems(numErrors = 0, waitFor) {
-    const queueItemArray = []
-
-    for (const queueItem of this.queue) {
-      if (this.numThreads >= this.maxThreads) {
-        break
-      }
-
-      if (queueItem.process || queueItem.errors.length >= numErrors) {
-        continue
-      }
-
-      this.numThreads += 1
-      queueItem.process = true
-      queueItemArray.push(queueItem)
-    }
-
-    for (const queueItem of queueItemArray) {
-      ;(async () => {
-        const result = await this.doQueueItem(queueItem)
-        this._queueDelAndMoveToBack(queueItem, !result)
-
-        queueItem.process = false
-        this.numThreads--
-        this.saveQueue()
-
-        waitFor.set()
-      })()
-    }
-
-    return queueItemArray.length
-  }
-
-  loadQueue() {
-    this.queue = []
-    const queue = this.sfsk.get([])
-    for (const raw of queue) {
-      this.queue.push(QueueItem.fromRaw(raw))
-    }
-  }
-
-  saveQueue() {
-    this.sfsk.set(this.queue)
-  }
-
-  pushError(error) {
-    console.log('Error: %s', error.message)
-    this.errors.push(error)
-  }
-}
-
-const queueLoad = new QueueLoad({
-  sfsk: new SimpleFileStorage('Tmp').key('queue'),
-  maxThreads: 10,
-})
-
-let DEV_FAST_TEST = 1
-
-queueLoad.reg('init', async (queueLoad) => {
-  for (let i = 0; i <= 308; i++) {
-    const answers = []
-    const url = `https://www.freecrosswordsolver.com/sitemap-answers-${i}.xml`
-
-    queueLoad.push('answerLoad', url)
-    if (DEV_FAST_TEST) return
-  }
-})
-
-queueLoad.reg('answerLoad', async (queueLoad, url) => {
-  console.log('answerLoad: %s', url)
-  const words =
-    (await (await fetch(url)).text()).match(/(?<=answer\/)\w+(?=<)/g) || []
-  if (DEV_FAST_TEST) words.splice(100)
-
-  for (const word of words) queueLoad.push('collectClues', word)
-})
-
-queueLoad.reg('collectClues', async (queueLoad, word) => {
-  const clues = []
-  const url = `https://www.freecrosswordsolver.com/answer/${word}`
-
-  console.log('collectClues: %s', url)
-  const text = await (await fetch(url)).text()
-  const re = new RegExp(
-    `(?<=<a class="page-link" href="https:\/\/www\\.freecrosswordsolver\\.com\/answer\/${word}\\?page=)\\d+(?=">)`,
-    'g'
-  )
-  const pages = text.match(re)
-
-  if (pages) {
-    for (const page of pages) queueLoad.push('collectCluesOther', word, page)
-  }
-})
-
-queueLoad.reg('collectCluesOther', async (queueLoad, word, page) => {
-  const url = `https://www.freecrosswordsolver.com/answer/${word}?page=${page}`
-
-  console.log('collectCluesOther: %s', url)
-  const text = await (await fetch(url)).text()
-  const clues = text.match(/(?<=crossword-clue">)[\w\s]+(?=<)/g) || []
-
-  new SimpleFileStorage('main').key('words').update((words) => {
-    let wordObj = words.find((v) => v.word === word)
-
-    if (!wordObj) {
-      wordObj = { word, clues: [] }
-      words.push(wordObj)
-    }
-
-    wordObj.clues.push(...clues)
-    let set = new Set()
-
-    wordObj.clues = wordObj.clues.filter((s) =>
-      set.has(s) ? false : (set.add(s), true)
-    )
-
-    return words
-  }, [])
-})
-
-if (!queueLoad.isContinue()) {
-  console.log('Init')
-  queueLoad.push('init')
-}
-
-queueLoad.start()
+// queueLoad.start()
